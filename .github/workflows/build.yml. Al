@@ -1,0 +1,59 @@
+name: Compilar EdyMastericer
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [Win32, x64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar (${{ matrix.arch }})
+        run: cmake -B build -A ${{ matrix.arch }} -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar
+        run: cmake --build build --config Release --parallel
+
+      - name: Guardar el plugin compilado
+        uses: actions/upload-artifact@v4
+        with:
+          name: vst3-${{ matrix.arch }}
+          path: build/EdyMastericer_artefacts/Release/VST3/EdyMastericer.vst3
+          if-no-files-found: error
+
+  instalador:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descargar plugin de 32 bits
+        uses: actions/download-artifact@v4
+        with:
+          name: vst3-Win32
+          path: bundle/win32
+
+      - name: Descargar plugin de 64 bits
+        uses: actions/download-artifact@v4
+        with:
+          name: vst3-x64
+          path: bundle/x64
+
+      - name: Instalar Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Crear el instalador
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Guardar el instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: EdyMastericer_Setup
+          path: Output/EdyMastericer_Setup.exe
+          if-no-files-found: error
