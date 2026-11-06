@@ -44,6 +44,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout EdyMastericerAudioProcessor:
     add ("ceiling",    "Techo",              -12.0f,   0.0f,  -0.3f, 0.1f);
     add ("release",    "Release",             10.0f, 500.0f, 100.0f, 1.0f);
     add ("outGain",    "Salida",             -12.0f,  12.0f,   0.0f, 0.1f);
+    add ("reverbSize", "Reverb Tamano",        0.0f, 100.0f,  40.0f, 1.0f);
+    add ("reverbDamp", "Reverb Amortiguacion", 0.0f, 100.0f,  50.0f, 1.0f);
+    add ("reverbMix",  "Reverb Mezcla",        0.0f, 100.0f,   0.0f, 1.0f);
 
     params.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
 
@@ -71,6 +74,9 @@ EdyMastericerAudioProcessor::EdyMastericerAudioProcessor()
     pCeiling    = apvts.getRawParameterValue ("ceiling");
     pRelease    = apvts.getRawParameterValue ("release");
     pBypass     = apvts.getRawParameterValue ("bypass");
+    pReverbSize = apvts.getRawParameterValue ("reverbSize");
+    pReverbDamp = apvts.getRawParameterValue ("reverbDamp");
+    pReverbMix  = apvts.getRawParameterValue ("reverbMix");
 }
 
 bool EdyMastericerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -90,6 +96,8 @@ void EdyMastericerAudioProcessor::prepareToPlay (double sampleRate, int samplesP
     eqHigh.prepare (spec);
     exHP.prepare (spec);
     limiter.prepare (spec);
+    reverb.prepare (spec);
+    reverb.reset();
 
     xo1.prepare (spec);
     xo2.prepare (spec);
@@ -253,6 +261,21 @@ void EdyMastericerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
             l[i] += amt * std::tanh (3.0f * hl[i]) / 3.0f;
             r[i] += amt * std::tanh (3.0f * hr[i]) / 3.0f;
         }
+    }
+
+    // 4b) Reverb de masterizacion (mezcla 0 % = sin efecto)
+    {
+        juce::dsp::Reverb::Parameters rp;
+        rp.roomSize   = pReverbSize->load() / 100.0f;
+        rp.damping    = pReverbDamp->load() / 100.0f;
+        rp.wetLevel   = (pReverbMix->load() / 100.0f) * 0.4f;
+        rp.dryLevel   = 1.0f;
+        rp.width      = 1.0f;
+        rp.freezeMode = 0.0f;
+        reverb.setParameters (rp);
+
+        juce::dsp::AudioBlock<float> block (buffer.getArrayOfWritePointers(), 2, (size_t) n);
+        reverb.process (juce::dsp::ProcessContextReplacing<float> (block));
     }
 
     // 5) Drive (empuja la senal hacia el limitador para ganar volumen)

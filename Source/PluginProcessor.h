@@ -89,6 +89,9 @@ private:
     std::atomic<float>* pCeiling = nullptr;
     std::atomic<float>* pRelease = nullptr;
     std::atomic<float>* pBypass = nullptr;
+    std::atomic<float>* pReverbSize = nullptr;
+    std::atomic<float>* pReverbDamp = nullptr;
+    std::atomic<float>* pReverbMix = nullptr;
 
     double sr = 44100.0;
 
@@ -105,6 +108,9 @@ private:
     Duplicator exHP;
     juce::AudioBuffer<float> exBuf;
     juce::SmoothedValue<float> exAmt;
+
+    // Reverb de masterizacion
+    juce::dsp::Reverb reverb;
 
     // Limitador final
     juce::dsp::Limiter<float> limiter;

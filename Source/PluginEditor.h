@@ -15,7 +15,7 @@ public:
     void resized() override;
 
 private:
-    static constexpr int kNumKnobs = 14;
+    static constexpr int kNumKnobs = 17;
 
     struct Knob
     {

@@ -26,7 +26,10 @@ namespace
         { "ceiling",    "TECHO",    " dB" },
         { "release",    "RELEASE",  " ms" },
         { "inGain",     "ENTRADA",  " dB" },
-        { "outGain",    "SALIDA",   " dB" }
+        { "outGain",    "SALIDA",   " dB" },
+        { "reverbSize", "TAMANO",   " %"  },
+        { "reverbDamp", "AMORTIG.", " %"  },
+        { "reverbMix",  "MEZCLA",   " %"  }
     };
 
     struct SectionDef { const char* title; int first; int count; int row; };
@@ -34,9 +37,10 @@ namespace
     const SectionDef kSections[] =
     {
         { "ECUALIZADOR",          0, 3, 0 },
-        { "COMPRESOR MULTIBANDA", 3, 2, 0 },
+        { "COMPRESOR",            3, 2, 0 },
         { "AMPLIADOR ESTEREO",    5, 3, 0 },
         { "EXCITER",              8, 1, 1 },
+        { "REVERB",              14, 3, 1 },
         { "MAXIMIZER / LIMITADOR", 9, 3, 1 },
         { "ENTRADA / SALIDA",    12, 2, 1 }
     };
@@ -51,7 +55,7 @@ namespace
 EdyMastericerAudioProcessorEditor::EdyMastericerAudioProcessorEditor (EdyMastericerAudioProcessor& p)
     : AudioProcessorEditor (&p), proc (p)
 {
-    setSize (840, 440);
+    setSize (980, 440);
 
     for (int i = 0; i < kNumKnobs; ++i)
     {
