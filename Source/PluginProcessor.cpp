@@ -48,6 +48,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout EdyMastericerAudioProcessor:
     add ("reverbDamp", "Reverb Amortiguacion", 0.0f, 100.0f,  50.0f, 1.0f);
     add ("reverbMix",  "Reverb Mezcla",        0.0f, 100.0f,   0.0f, 1.0f);
 
+    params.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { "lufsTarget", 1 },
+                                                                     "Objetivo LUFS",
+                                                                     juce::StringArray { "Spotify / YouTube (-14)",
+                                                                                         "Apple Music (-16)",
+                                                                                         "Fuerte / club (-9)",
+                                                                                         "TV / radio (-23)" },
+                                                                     0));
+
     params.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "bypass", 1 }, "Bypass", false));
 
     return { params.begin(), params.end() };
@@ -98,6 +106,26 @@ void EdyMastericerAudioProcessor::prepareToPlay (double sampleRate, int samplesP
     limiter.prepare (spec);
     reverb.prepare (spec);
     reverb.reset();
+
+    // Medidor LUFS: filtro K (shelf de agudos + pasa-altos) y bloques de 100 ms
+    kShelf.prepare (spec);
+    kHP.prepare (spec);
+    kShelf.reset();
+    kHP.reset();
+    *kShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (sampleRate, 1681.97f, 0.7071f, 1.5849f);
+    *kHP.state    = *juce::dsp::IIR::Coefficients<float>::makeHighPass  (sampleRate, 38.13f, 0.5f);
+    kBuf.setSize (2, (int) spec.maximumBlockSize);
+    subBlockLen = juce::jmax (1, (int) (sampleRate * 0.1));
+    subCount = 0;
+    subSum = 0.0;
+    subWritePos = 0;
+    subFilled = 0;
+    if (sampleRate != lastSampleRate)
+    {
+        histEnergy.fill (0.0);
+        histCount.fill (0.0);
+        lastSampleRate = sampleRate;
+    }
 
     xo1.prepare (spec);
     xo2.prepare (spec);
@@ -179,6 +207,7 @@ void EdyMastericerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
     {
         outPeakL.store (inL);
         outPeakR.store (inR);
+        measureLoudness (buffer, n);
         return;
     }
 
@@ -304,6 +333,116 @@ void EdyMastericerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer
 
     outPeakL.store (buffer.getMagnitude (0, 0, n));
     outPeakR.store (buffer.getMagnitude (1, 0, n));
+
+    measureLoudness (buffer, n);
+}
+
+void EdyMastericerAudioProcessor::measureLoudness (const juce::AudioBuffer<float>& buf, int n)
+{
+    if (resetRequested.exchange (false))
+    {
+        histEnergy.fill (0.0);
+        histCount.fill (0.0);
+        subPow.fill (0.0);
+        subFilled = 0;
+        subWritePos = 0;
+        subCount = 0;
+        subSum = 0.0;
+        lufsMomentary.store (-100.0f);
+        lufsShort.store (-100.0f);
+        lufsIntegrated.store (-100.0f);
+    }
+
+    if (kBuf.getNumSamples() < n)
+        kBuf.setSize (2, n, false, false, true);
+
+    kBuf.copyFrom (0, 0, buf, 0, 0, n);
+    kBuf.copyFrom (1, 0, buf, 1, 0, n);
+
+    juce::dsp::AudioBlock<float> kBlock (kBuf);
+    auto sub = kBlock.getSubBlock (0, (size_t) n);
+    kShelf.process (juce::dsp::ProcessContextReplacing<float> (sub));
+    kHP.process (juce::dsp::ProcessContextReplacing<float> (sub));
+
+    const float* l = kBuf.getReadPointer (0);
+    const float* r = kBuf.getReadPointer (1);
+
+    for (int i = 0; i < n; ++i)
+    {
+        subSum += (double) l[i] * l[i] + (double) r[i] * r[i];
+
+        if (++subCount >= subBlockLen)
+        {
+            pushSubBlock (subSum / (double) subBlockLen);
+            subSum = 0.0;
+            subCount = 0;
+        }
+    }
+}
+
+void EdyMastericerAudioProcessor::pushSubBlock (double power)
+{
+    constexpr int kHistory = 30; // 30 x 100 ms = 3 s
+
+    subPow[(size_t) subWritePos] = power;
+    subWritePos = (subWritePos + 1) % kHistory;
+    subFilled = juce::jmin (subFilled + 1, kHistory);
+
+    auto meanLast = [this] (int count)
+    {
+        double s = 0.0;
+        for (int k = 0; k < count; ++k)
+            s += subPow[(size_t) ((subWritePos - 1 - k + 2 * kHistory) % kHistory)];
+        return s / (double) count;
+    };
+
+    auto toLufs = [] (double p)
+    {
+        return p > 1.0e-10 ? (float) (-0.691 + 10.0 * std::log10 (p)) : -100.0f;
+    };
+
+    if (subFilled >= 4)
+    {
+        const double pm = meanLast (4);
+        const float lm = toLufs (pm);
+        lufsMomentary.store (lm);
+
+        // Integrado: solo bloques por encima de -70 LUFS, y luego por encima de (promedio - 10 LU)
+        if (lm > -70.0f)
+        {
+            const int bin = juce::jlimit (0, kBins - 1, (int) std::floor ((lm + 70.0f) * 10.0f));
+            histCount[(size_t) bin] += 1.0;
+            histEnergy[(size_t) bin] += pm;
+        }
+
+        double totalCount = 0.0, totalEnergy = 0.0;
+        for (int b = 0; b < kBins; ++b)
+        {
+            totalCount  += histCount[(size_t) b];
+            totalEnergy += histEnergy[(size_t) b];
+        }
+
+        if (totalCount > 0.0)
+        {
+            const float relThreshold = toLufs (totalEnergy / totalCount) - 10.0f;
+            double gCount = 0.0, gEnergy = 0.0;
+
+            for (int b = 0; b < kBins; ++b)
+            {
+                if ((float) b * 0.1f - 70.0f >= relThreshold)
+                {
+                    gCount  += histCount[(size_t) b];
+                    gEnergy += histEnergy[(size_t) b];
+                }
+            }
+
+            if (gCount > 0.0)
+                lufsIntegrated.store (toLufs (gEnergy / gCount));
+        }
+    }
+
+    if (subFilled >= 4)
+        lufsShort.store (toLufs (meanLast (subFilled)));
 }
 
 juce::AudioProcessorEditor* EdyMastericerAudioProcessor::createEditor()

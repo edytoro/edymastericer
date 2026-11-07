@@ -45,6 +45,11 @@ namespace
         { "ENTRADA / SALIDA",    12, 2, 1 }
     };
 
+    const juce::Colour kGreen (0xff3ddc84);
+    const juce::Colour kRed   (0xffff4d4d);
+    constexpr float kLufsMin = -32.0f;
+    constexpr float kLufsMax = 0.0f;
+
     float levelToFraction (float level)
     {
         const float db = juce::Decibels::gainToDecibels (level, -60.0f);
@@ -55,7 +60,7 @@ namespace
 EdyMastericerAudioProcessorEditor::EdyMastericerAudioProcessorEditor (EdyMastericerAudioProcessor& p)
     : AudioProcessorEditor (&p), proc (p)
 {
-    setSize (980, 440);
+    setSize (980, 570);
 
     for (int i = 0; i < kNumKnobs; ++i)
     {
@@ -84,6 +89,19 @@ EdyMastericerAudioProcessorEditor::EdyMastericerAudioProcessorEditor (EdyMasteri
     addAndMakeVisible (bypassButton);
     bypassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "bypass", bypassButton);
 
+    targetBox.addItemList (proc.apvts.getParameter ("lufsTarget")->getAllValueStrings(), 1);
+    targetBox.setColour (juce::ComboBox::backgroundColourId, kPanel);
+    targetBox.setColour (juce::ComboBox::textColourId, kText);
+    targetBox.setColour (juce::ComboBox::outlineColourId, kBorder);
+    targetBox.setColour (juce::ComboBox::arrowColourId, kAccent);
+    addAndMakeVisible (targetBox);
+    targetAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "lufsTarget", targetBox);
+
+    resetButton.setColour (juce::TextButton::buttonColourId, kPanel);
+    resetButton.setColour (juce::TextButton::textColourOffId, kText);
+    resetButton.onClick = [this] { proc.resetLoudness(); };
+    addAndMakeVisible (resetButton);
+
     startTimerHz (30);
 }
 
@@ -94,6 +112,12 @@ void EdyMastericerAudioProcessorEditor::resized()
     meterArea = juce::Rectangle<int> (getWidth() - 100, 70, 88, getHeight() - 86);
 
     auto content = getLocalBounds().withTrimmedTop (62).withTrimmedRight (100).reduced (12);
+
+    lufsArea = content.removeFromBottom (124).reduced (4);
+    lufsBar = juce::Rectangle<int> (lufsArea.getX() + 14, lufsArea.getY() + 36, lufsArea.getWidth() - 14 - 220, 22);
+    targetBox.setBounds (lufsArea.getRight() - 196, lufsArea.getY() + 40, 182, 26);
+    resetButton.setBounds (lufsArea.getRight() - 196, lufsArea.getY() + 76, 182, 26);
+
     const int rowH = content.getHeight() / 2;
 
     sectionBounds.clear();
@@ -165,6 +189,106 @@ void EdyMastericerAudioProcessorEditor::paint (juce::Graphics& g)
         }
     }
 
+    // Medidor LUFS con zona objetivo
+    {
+        g.setColour (kPanel);
+        g.fillRoundedRectangle (lufsArea.toFloat(), 8.0f);
+        g.setColour (kBorder);
+        g.drawRoundedRectangle (lufsArea.toFloat().reduced (0.5f), 8.0f, 1.0f);
+
+        g.setColour (kAccent);
+        g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+        g.drawText ("LUFS - VOLUMEN PERCIBIDO (SALIDA)", lufsArea.getX() + 12, lufsArea.getY() + 6, 400, 16, juce::Justification::centredLeft);
+
+        g.setColour (kDim);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("OBJETIVO", targetBox.getX(), targetBox.getY() - 16, 120, 14, juce::Justification::centredLeft);
+
+        const int idx = juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("lufsTarget")->load());
+        const float target = EdyMastericerAudioProcessor::lufsTargets[idx];
+
+        auto xFor = [this] (float lufs)
+        {
+            const float f = juce::jlimit (0.0f, 1.0f, (lufs - kLufsMin) / (kLufsMax - kLufsMin));
+            return (float) lufsBar.getX() + f * (float) lufsBar.getWidth();
+        };
+
+        g.setColour (kBackground);
+        g.fillRect (lufsBar);
+
+        // Zona amarilla (+-3 LU) y zona verde (+-1 LU) alrededor del objetivo
+        g.setColour (kAccent.withAlpha (0.30f));
+        g.fillRect (juce::Rectangle<float> (xFor (target - 3.0f), (float) lufsBar.getY(), xFor (target + 3.0f) - xFor (target - 3.0f), (float) lufsBar.getHeight()));
+        g.setColour (kGreen.withAlpha (0.55f));
+        g.fillRect (juce::Rectangle<float> (xFor (target - 1.0f), (float) lufsBar.getY(), xFor (target + 1.0f) - xFor (target - 1.0f), (float) lufsBar.getHeight()));
+
+        // Barra de nivel (corto plazo)
+        const float shown = lufsS > -70.0f ? lufsS : (lufsM > -70.0f ? lufsM : -100.0f);
+        if (shown > kLufsMin)
+        {
+            const float diff = std::abs (shown - target);
+            g.setColour ((diff <= 1.0f ? kGreen : diff <= 3.0f ? kAccent : kRed).withAlpha (0.95f));
+            g.fillRect (juce::Rectangle<float> ((float) lufsBar.getX(), (float) lufsBar.getY() + 6.0f,
+                                                xFor (shown) - (float) lufsBar.getX(), (float) lufsBar.getHeight() - 12.0f));
+        }
+
+        // Linea del objetivo y marca del valor integrado
+        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.fillRect (xFor (target) - 1.0f, (float) lufsBar.getY() - 3.0f, 2.0f, (float) lufsBar.getHeight() + 6.0f);
+        if (lufsI > -70.0f)
+        {
+            g.setColour (juce::Colour (0xff4dc3ff));
+            g.fillRect (xFor (lufsI) - 1.0f, (float) lufsBar.getY(), 2.0f, (float) lufsBar.getHeight());
+        }
+
+        g.setColour (kBorder);
+        g.drawRect (lufsBar, 1);
+
+        // Escala
+        g.setColour (kDim);
+        g.setFont (juce::FontOptions (10.0f));
+        for (int v = -30; v <= 0; v += 6)
+            g.drawText (juce::String (v), (int) xFor ((float) v) - 14, lufsBar.getBottom() + 3, 28, 12, juce::Justification::centred);
+
+        // Lecturas
+        auto valueText = [] (float v) { return v > -99.0f ? juce::String (v, 1) + " LUFS" : juce::String ("---"); };
+        const char* titles[3] = { "MOMENTANEO", "CORTO PLAZO (3 s)", "INTEGRADO" };
+        const float values[3] = { lufsM, lufsS, lufsI };
+
+        for (int i = 0; i < 3; ++i)
+        {
+            const int x = lufsBar.getX() + i * 115;
+            g.setColour (kDim);
+            g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            g.drawText (titles[i], x, lufsBar.getBottom() + 18, 112, 12, juce::Justification::centredLeft);
+            g.setColour (i == 2 ? juce::Colour (0xff4dc3ff) : kText);
+            g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+            g.drawText (valueText (values[i]), x, lufsBar.getBottom() + 31, 112, 22, juce::Justification::centredLeft);
+        }
+
+        // Guia en palabras
+        const float ref = lufsI > -70.0f ? lufsI : (lufsS > -70.0f ? lufsS : -100.0f);
+        juce::String msg = "Reproduce la cancion para medir";
+        juce::Colour msgColour = kDim;
+
+        if (ref > -70.0f)
+        {
+            const float diff = ref - target;
+            msgColour = std::abs (diff) <= 1.0f ? kGreen : std::abs (diff) <= 3.0f ? kAccent : kRed;
+
+            if (std::abs (diff) <= 1.0f)
+                msg = "EN EL OBJETIVO (" + juce::String (target, 0) + " LUFS)";
+            else if (diff < 0.0f)
+                msg = "MUY BAJO: sube unos " + juce::String (-diff, 1) + " LU";
+            else
+                msg = "MUY ALTO: baja unos " + juce::String (diff, 1) + " LU";
+        }
+
+        g.setColour (msgColour);
+        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+        g.drawFittedText (msg, lufsBar.getX() + 350, lufsBar.getBottom() + 22, lufsBar.getWidth() - 350, 32, juce::Justification::centredLeft, 2);
+    }
+
     // Medidores
     g.setColour (kPanel);
     g.fillRoundedRectangle (meterArea.toFloat(), 8.0f);
@@ -208,5 +332,10 @@ void EdyMastericerAudioProcessorEditor::timerCallback()
     for (int i = 0; i < 4; ++i)
         display[i] = std::max (v[i], display[i] * 0.88f);
 
+    lufsM = proc.lufsMomentary.load();
+    lufsS = proc.lufsShort.load();
+    lufsI = proc.lufsIntegrated.load();
+
     repaint (meterArea);
+    repaint (lufsArea);
 }

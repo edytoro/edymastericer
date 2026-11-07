@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_dsp/juce_dsp.h>
+#include <array>
 
 // Compresor sencillo (un solo canal de deteccion enlazado para ambos lados).
 struct BandComp
@@ -66,6 +67,11 @@ public:
     std::atomic<float> inPeakL { 0.0f }, inPeakR { 0.0f };
     std::atomic<float> outPeakL { 0.0f }, outPeakR { 0.0f };
 
+    // Medidor de volumen percibido (LUFS)
+    std::atomic<float> lufsMomentary { -100.0f }, lufsShort { -100.0f }, lufsIntegrated { -100.0f };
+    void resetLoudness() { resetRequested.store (true); }
+    static constexpr float lufsTargets[4] = { -14.0f, -16.0f, -9.0f, -23.0f };
+
 private:
     using Duplicator = juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>,
                                                       juce::dsp::IIR::Coefficients<float>>;
@@ -116,6 +122,19 @@ private:
     juce::dsp::Limiter<float> limiter;
 
     float lastIn = 1.0f, lastDrive = 1.0f, lastOut = 1.0f;
+
+    // Medidor LUFS (ITU-R BS.1770 aproximado)
+    void measureLoudness (const juce::AudioBuffer<float>& buf, int n);
+    void pushSubBlock (double power);
+    Duplicator kShelf, kHP;
+    juce::AudioBuffer<float> kBuf;
+    std::atomic<bool> resetRequested { false };
+    int subBlockLen = 4800, subCount = 0, subWritePos = 0, subFilled = 0;
+    double subSum = 0.0, lastSampleRate = 0.0;
+    std::array<double, 30> subPow {};
+    static constexpr int kBins = 801;
+    std::array<double, kBins> histEnergy {};
+    std::array<double, kBins> histCount {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EdyMastericerAudioProcessor)
 };

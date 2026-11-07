@@ -32,6 +32,12 @@ private:
     juce::ToggleButton bypassButton { "BYPASS" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> bypassAttachment;
 
+    juce::ComboBox targetBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> targetAttachment;
+    juce::TextButton resetButton { "REINICIAR" };
+    juce::Rectangle<int> lufsArea, lufsBar;
+    float lufsM = -100.0f, lufsS = -100.0f, lufsI = -100.0f;
+
     std::vector<juce::Rectangle<int>> sectionBounds;
     juce::Rectangle<int> meterArea;
     float display[4] { 0.0f, 0.0f, 0.0f, 0.0f };
